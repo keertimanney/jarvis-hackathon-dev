@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>EVA - Reachy Mini</title>
+  <title>Jarvis - Reachy Mini</title>
   <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.24.0.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -25,11 +25,16 @@
     .status-dot.blue { background: #1e90ff; box-shadow: 0 0 8px #1e90ff66; animation: pulse 1s infinite; }
 
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    @keyframes dance-bounce {
+      0%,100% { transform: rotate(0deg); }
+      25% { transform: rotate(-8deg); }
+      75% { transform: rotate(8deg); }
+    }
 
     .grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      grid-template-rows: auto auto;
+      grid-template-rows: auto auto auto;
       gap: 12px;
       padding: 12px;
       max-width: 1200px;
@@ -48,6 +53,25 @@
       border-bottom: 1px solid #1e90ff22; padding-bottom: 4px;
     }
 
+    /* Mode banner — spans full width */
+    .mode-banner {
+      grid-column: 1 / -1;
+      display: flex; align-items: center; justify-content: center; gap: 16px;
+      padding: 16px;
+      border-radius: 8px;
+      font-size: 1.2em; font-weight: bold;
+      text-transform: uppercase; letter-spacing: 2px;
+      transition: all 0.4s ease;
+    }
+    .mode-idle { background: #1a1a2e; color: #555; border: 1px solid #333; }
+    .mode-person_tracking { background: #00ff8815; color: #00ff88; border: 1px solid #00ff8844; }
+    .mode-gesture_control { background: #ffd70015; color: #ffd700; border: 1px solid #ffd70044; }
+    .mode-dance { background: #ff69b415; color: #ff69b4; border: 1px solid #ff69b444; }
+    .mode-dance .mode-icon { animation: dance-bounce 0.5s infinite; }
+
+    .mode-icon { font-size: 1.6em; }
+    .mode-label { font-size: 1em; }
+
     .state-badge {
       display: inline-block; padding: 4px 12px; border-radius: 12px;
       font-size: 0.9em; font-weight: bold; text-transform: uppercase;
@@ -59,7 +83,6 @@
     .state-idle, .state-silent { background: #44444422; color: #888; border: 1px solid #44444444; }
 
     .transcript { color: #ccc; font-size: 0.95em; min-height: 40px; }
-    .transcript .label { color: #888; font-size: 0.8em; }
 
     .emotion-display {
       font-size: 1.3em; color: #ff69b4; min-height: 30px;
@@ -74,28 +97,48 @@
     }
 
     .events {
-      max-height: 250px; overflow-y: auto; font-size: 0.82em;
+      max-height: 300px; overflow-y: auto; font-size: 0.82em;
     }
     .events .event {
-      padding: 3px 0; border-bottom: 1px solid #ffffff08;
+      padding: 4px 0; border-bottom: 1px solid #ffffff08;
+      display: flex; gap: 6px;
     }
-    .events .event .time { color: #555; }
-    .events .event .tag { font-weight: bold; margin: 0 4px; }
+    .events .event .time { color: #555; white-space: nowrap; min-width: 70px; }
+    .events .event .tag {
+      font-weight: bold; white-space: nowrap; min-width: 65px;
+      text-align: right;
+    }
+    .events .event .text { color: #ccc; }
     .tag-user { color: #00ff88; }
     .tag-jarvis { color: #1e90ff; }
     .tag-emotion { color: #ff69b4; }
     .tag-action { color: #ffd700; }
+    .tag-mode { color: #da70d6; }
+    .tag-move { color: #ff8c00; }
+    .tag-tool { color: #00ced1; }
     .tag-system { color: #888; }
+    .tag-dance { color: #ff69b4; }
 
     .conn-info { display: flex; gap: 16px; font-size: 0.85em; color: #888; }
     .conn-info span { display: flex; align-items: center; gap: 4px; }
+
+    /* Stats row */
+    .stats {
+      grid-column: 1 / -1;
+      display: flex; gap: 20px; padding: 8px 16px;
+      background: #12121a; border-radius: 8px;
+      border: 1px solid #1e90ff22;
+      font-size: 0.82em; color: #888;
+    }
+    .stat { display: flex; align-items: center; gap: 6px; }
+    .stat-value { color: #e0e0e0; font-weight: bold; }
 
     #log { display: none; }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>EVA</h1>
+    <h1>JARVIS</h1>
     <div class="conn-info">
       <span><span class="status-dot" id="dot-agora"></span>Agora</span>
       <span><span class="status-dot" id="dot-reachy"></span>Reachy</span>
@@ -104,6 +147,13 @@
   </div>
 
   <div class="grid">
+    <!-- Mode banner -->
+    <div class="mode-banner mode-idle" id="mode-banner">
+      <span class="mode-icon" id="mode-icon">--</span>
+      <span class="mode-label" id="mode-label">Idle</span>
+    </div>
+
+    <!-- Transcripts -->
     <div class="card">
       <h2>Heard (You)</h2>
       <div class="transcript" id="user-text">...</div>
@@ -114,24 +164,40 @@
       <div class="transcript" id="agent-text">...</div>
     </div>
 
+    <!-- Emotion + Audio -->
     <div class="card">
-      <h2>Feeling</h2>
+      <h2>Emotion</h2>
       <div class="emotion-display" id="emotion">idle</div>
       <div class="level-bar-container">
         <div class="level-bar" id="audio-bar" style="width:0%"></div>
       </div>
     </div>
 
+    <!-- Activity log -->
     <div class="card">
-      <h2>Activity</h2>
+      <h2>Activity Log</h2>
       <div class="events" id="events"></div>
+    </div>
+
+    <!-- Stats row -->
+    <div class="stats">
+      <div class="stat">Mode: <span class="stat-value" id="stat-mode">idle</span></div>
+      <div class="stat">Reachy: <span class="stat-value" id="stat-reachy">--</span></div>
+      <div class="stat">Agent: <span class="stat-value" id="stat-agent">--</span></div>
+      <div class="stat">Emotion: <span class="stat-value" id="stat-emotion">--</span></div>
     </div>
   </div>
 
   <pre id="log"></pre>
   <script src="/static/agora/app.js"></script>
   <script>
-    // Dashboard polling
+    const MODE_CONFIG = {
+      idle:             { icon: "--",  label: "Idle",             cls: "mode-idle" },
+      person_tracking:  { icon: "👁",  label: "Person Tracking",  cls: "mode-person_tracking" },
+      gesture_control:  { icon: "🤚",  label: "Gesture Control",  cls: "mode-gesture_control" },
+      dance:            { icon: "💃",  label: "Dancing",          cls: "mode-dance" },
+    };
+
     let lastEventCount = 0;
 
     async function pollDashboard() {
@@ -140,7 +206,7 @@
         if (!res.ok) return;
         const s = await res.json();
 
-        // State badge
+        // Conversation state badge
         const stateEl = document.getElementById("conv-state");
         const cls = "state-" + (s.conversation_state || "idle");
         stateEl.innerHTML = `<span class="state-badge ${cls}">${s.conversation_state || "idle"}</span>`;
@@ -167,6 +233,22 @@
           document.getElementById("dot-agora").className = "status-dot blue";
         }
 
+        // Mode banner
+        const mode = s.current_mode || "idle";
+        const mc = MODE_CONFIG[mode] || MODE_CONFIG.idle;
+        const banner = document.getElementById("mode-banner");
+        banner.className = "mode-banner " + mc.cls;
+        document.getElementById("mode-icon").textContent = mc.icon;
+        document.getElementById("mode-label").textContent = mc.label;
+
+        // Stats
+        document.getElementById("stat-mode").textContent = mode;
+        document.getElementById("stat-reachy").textContent = s.reachy_connected ? "Connected" : "Offline";
+        document.getElementById("stat-reachy").style.color = s.reachy_connected ? "#00ff88" : "#ff4444";
+        document.getElementById("stat-agent").textContent = s.agent_running ? "Running" : "Stopped";
+        document.getElementById("stat-agent").style.color = s.agent_running ? "#00ff88" : "#ff4444";
+        document.getElementById("stat-emotion").textContent = s.current_emotion || "--";
+
         // Events feed
         const eventsEl = document.getElementById("events");
         if (s.events && s.events.length !== lastEventCount) {
@@ -174,7 +256,7 @@
           eventsEl.innerHTML = s.events.slice().reverse().map(e => {
             const t = new Date(e.ts * 1000).toLocaleTimeString();
             const tagClass = "tag-" + e.type;
-            return `<div class="event"><span class="time">${t}</span><span class="tag ${tagClass}">[${e.type}]</span>${escHtml(e.text)}</div>`;
+            return `<div class="event"><span class="time">${t}</span><span class="tag ${tagClass}">[${e.type}]</span><span class="text">${escHtml(e.text)}</span></div>`;
           }).join("");
         }
       } catch (_) {}

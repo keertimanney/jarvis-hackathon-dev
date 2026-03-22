@@ -110,10 +110,20 @@ class AgentManager:
         if mcp_url:
             llm = payload["properties"].get("llm", {})
             llm["mcp_servers"] = [{
-                "name": "openclaw",
+                "name": "jarvis-tools",
                 "endpoint": f"{mcp_url}/mcp",
                 "transport": "streamable_http",
-                "allowed_tools": ["execute_desktop_command"],
+                "allowed_tools": [
+                    "execute_desktop_command",
+                    "start_person_tracking",
+                    "stop_person_tracking",
+                    "start_gesture_control",
+                    "stop_gesture_control",
+                    "start_dance",
+                    "stop_dance",
+                    "play_emotion",
+                    "move_head",
+                ],
                 "timeout_ms": 30000,
             }]
             payload["properties"]["llm"] = llm

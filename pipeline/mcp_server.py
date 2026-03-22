@@ -60,6 +60,97 @@ def execute_desktop_command(command: str) -> str:
         return f"Error executing command: {e}"
 
 
+_WEB_SERVER_URL = "http://localhost:8080"
+
+
+def _call_mode_api(path, json_body=None):
+    """Call a mode endpoint on the local web server."""
+    import requests
+    try:
+        resp = requests.post(f"{_WEB_SERVER_URL}{path}", json=json_body, timeout=15)
+        return resp.json().get("message", "OK")
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def start_person_tracking() -> str:
+    """Start person tracking mode. The robot will follow the nearest person
+    with its head and body. Use this when having a conversation or when
+    the user wants the robot to look at them.
+    Stops any other active mode (gesture control or dance).
+    """
+    return _call_mode_api("/api/mode/person-tracking/start")
+
+
+@mcp.tool()
+def stop_person_tracking() -> str:
+    """Stop person tracking mode. The robot stops following people
+    and returns to a neutral position."""
+    return _call_mode_api("/api/mode/person-tracking/stop")
+
+
+@mcp.tool()
+def start_gesture_control() -> str:
+    """Switch to gesture control mode. The user can control the desktop
+    computer with hand gestures:
+    - Swipe left/right with index finger = browser back/forward
+    - Swipe up/down with index finger = scroll
+    - Fist = click
+    - OK sign (thumb + index) = Enter/confirm
+    - Peace sign + motion = fast scroll
+    Stops any other active mode (person tracking or dance).
+    """
+    return _call_mode_api("/api/mode/gesture-control/start")
+
+
+@mcp.tool()
+def stop_gesture_control() -> str:
+    """Stop gesture control mode and return to idle."""
+    return _call_mode_api("/api/mode/gesture-control/stop")
+
+
+@mcp.tool()
+def start_dance() -> str:
+    """Start dance mode. The robot listens for music beats and dances
+    along with a 4-beat sway-and-bop sequence. Use this when playing
+    music for the user. Call execute_desktop_command to play music first,
+    then call this tool.
+    Stops any other active mode (person tracking or gesture control).
+    """
+    return _call_mode_api("/api/mode/dance/start")
+
+
+@mcp.tool()
+def stop_dance() -> str:
+    """Stop dance mode. Robot returns to neutral position."""
+    return _call_mode_api("/api/mode/dance/stop")
+
+
+@mcp.tool()
+def play_emotion(emotion_id: str) -> str:
+    """Play a robot emotion animation. Works in any mode.
+
+    Common emotions: amazed1, cheerful1, curious1, confused1, dance1,
+    dance2, dance3, enthusiastic1, grateful1, laughing1, sad1,
+    surprised1, welcoming1, yes1, no1, loving1, proud1, shy1.
+
+    Args:
+        emotion_id: The emotion animation to play (e.g. "cheerful1").
+    """
+    return _call_mode_api("/api/mode/emotion", {"emotion_id": emotion_id})
+
+
+@mcp.tool()
+def move_head(direction: str) -> str:
+    """Move the robot's head in a direction. Works in any mode.
+
+    Args:
+        direction: One of: left, right, up, down, front, nod
+    """
+    return _call_mode_api("/api/mode/head", {"direction": direction})
+
+
 def run_server(port=8000):
     """Start the MCP server (blocking)."""
     import uvicorn

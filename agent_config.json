@@ -17,7 +17,7 @@
                     "content": "{{config/system_prompt_agora.txt}}"
                 }
             ],
-            "greeting_message": "Hi! I'm EVA. What would you like to do?"
+            "greeting_message": "Hey there! I'm Jarvis. I can control the computer, dance to music, track you with my head, or let you control things with hand gestures. What do you want to try?"
         },
         "tts": {
             "vendor": "minimax",

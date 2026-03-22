@@ -21,6 +21,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from pipeline.agent_manager import AgentManager
+from pipeline.frame_provider import FrameProvider
+from pipeline.lights import create_light_backend
+from pipeline.mode_manager import ModeManager
 from pipeline.reachy_bridge import ReachyBridge
 
 logger = logging.getLogger(__name__)
@@ -30,6 +33,9 @@ _STATIC_DIR = _PROJECT_ROOT / "static" / "agora"
 
 _agent_manager: AgentManager | None = None
 _reachy: ReachyBridge = ReachyBridge()
+_frame_provider = None  # initialized in on_startup
+_mode_manager = None    # initialized in on_startup
+_lights = None          # initialized in on_startup
 
 # Live state for dashboard
 _dashboard_state = {
@@ -40,6 +46,7 @@ _dashboard_state = {
     "audio_level": 0.0,
     "reachy_connected": False,
     "agent_running": False,
+    "current_mode": "idle",
     "events": [],  # last 20 events
 }
 _state_lock = threading.Lock()
@@ -96,6 +103,8 @@ def _dispatch_action(data: dict[str, Any]) -> None:
         emotion = data.get("emotion_type") or data.get("emotion", "")
         if emotion:
             _reachy.play_emotion(str(emotion))
+            if _lights:
+                _lights.set_emotion(str(emotion))
             _update_state(current_emotion=str(emotion))
             _push_event("emotion", str(emotion))
 
@@ -124,9 +133,20 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def on_startup():
+        global _frame_provider, _mode_manager, _lights
         # Connect to Reachy Mini
         if _reachy.connect():
             _reachy.wiggle_antennas()
+        # Start shared camera + mode manager
+        _frame_provider = FrameProvider(reachy_mini=_reachy.robot if _reachy.connected else None)
+        _frame_provider.start()
+        _mode_manager = ModeManager(_frame_provider, _reachy)
+        # Initialize Govee lights
+        _lights = create_light_backend("govee")
+        if _lights.is_connected:
+            logger.info("Govee lights connected")
+        else:
+            logger.warning("Govee lights not connected — running without lights")
 
     @app.get("/")
     def index():
@@ -257,6 +277,77 @@ def create_app() -> FastAPI:
 
         return {"ok": True}
 
+    # ------------------------------------------------------------------
+    # Mode switching endpoints (called by MCP tools)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/mode/person-tracking/start")
+    def start_person_tracking() -> dict[str, Any]:
+        msg = _mode_manager.start_person_tracking()
+        _update_state(current_mode=_mode_manager.current_mode)
+        _push_event("mode", "person tracking started")
+        return {"ok": True, "message": msg}
+
+    @app.post("/api/mode/person-tracking/stop")
+    def stop_person_tracking() -> dict[str, Any]:
+        msg = _mode_manager.stop_person_tracking()
+        _update_state(current_mode=_mode_manager.current_mode)
+        _push_event("mode", "person tracking stopped")
+        return {"ok": True, "message": msg}
+
+    @app.post("/api/mode/gesture-control/start")
+    def start_gesture_control() -> dict[str, Any]:
+        msg = _mode_manager.start_gesture_control()
+        _update_state(current_mode=_mode_manager.current_mode)
+        _push_event("mode", "gesture control started")
+        return {"ok": True, "message": msg}
+
+    @app.post("/api/mode/gesture-control/stop")
+    def stop_gesture_control() -> dict[str, Any]:
+        msg = _mode_manager.stop_gesture_control()
+        _update_state(current_mode=_mode_manager.current_mode)
+        _push_event("mode", "gesture control stopped")
+        return {"ok": True, "message": msg}
+
+    @app.post("/api/mode/dance/start")
+    def start_dance() -> dict[str, Any]:
+        msg = _mode_manager.start_dance()
+        _update_state(current_mode=_mode_manager.current_mode)
+        _push_event("mode", "dance mode started")
+        return {"ok": True, "message": msg}
+
+    @app.post("/api/mode/dance/stop")
+    def stop_dance() -> dict[str, Any]:
+        msg = _mode_manager.stop_dance()
+        _update_state(current_mode=_mode_manager.current_mode)
+        _push_event("mode", "dance mode stopped")
+        return {"ok": True, "message": msg}
+
+    @app.post("/api/mode/emotion")
+    def play_emotion(payload: dict[str, Any]) -> dict[str, Any]:
+        emotion_id = str(payload.get("emotion_id", "")).strip()
+        if not emotion_id:
+            return {"ok": False, "message": "Missing emotion_id"}
+        _reachy.play_emotion(emotion_id)
+        if _lights:
+            _lights.set_emotion(emotion_id)
+        _update_state(current_emotion=emotion_id)
+        _push_event("emotion", emotion_id)
+        return {"ok": True, "message": f"Playing emotion: {emotion_id}"}
+
+    @app.post("/api/mode/head")
+    def move_head(payload: dict[str, Any]) -> dict[str, Any]:
+        direction = str(payload.get("direction", "")).strip()
+        if not direction:
+            return {"ok": False, "message": "Missing direction"}
+        _reachy.move_head(direction)
+        _push_event("move", f"head {direction}")
+        return {"ok": True, "message": f"Head moved {direction}"}
+
+    @app.get("/api/mode/status")
+    def mode_status() -> dict[str, Any]:
+        return {"mode": _mode_manager.current_mode if _mode_manager else "idle"}
+
     @app.get("/api/dashboard/state")
     def dashboard_state() -> dict[str, Any]:
         """Live state for dashboard UI."""
@@ -264,6 +355,7 @@ def create_app() -> FastAPI:
             state = dict(_dashboard_state)
             state["reachy_connected"] = _reachy.connected
             state["agent_running"] = _agent_manager.is_running() if _agent_manager else False
+            state["current_mode"] = _mode_manager.current_mode if _mode_manager else "idle"
             return state
 
     @app.get("/api/health")
@@ -272,6 +364,10 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     def on_shutdown():
+        if _mode_manager:
+            _mode_manager._stop_current_mode()
+        if _frame_provider:
+            _frame_provider.stop()
         if _agent_manager and _agent_manager.is_running():
             logger.info("Stopping agent...")
             _agent_manager.stop_agent()

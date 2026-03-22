@@ -35,14 +35,52 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Emotion -> RGB color mapping (shared across all backends)
+# Maps both Reachy emotion IDs and generic emotion names
 EMOTION_RGB = {
-    "excited":   (255, 200, 0),    # warm yellow
-    "curious":   (0, 150, 255),    # blue
-    "calm":      (100, 200, 100),  # soft green
-    "surprised": (255, 100, 0),    # orange
-    "amused":    (255, 150, 200),  # pink
-    "skeptical": (200, 100, 255),  # purple
+    # Reachy emotion IDs
+    "cheerful1":     (255, 255, 0),    # happy = yellow
+    "enthusiastic1": (0, 255, 0),      # excited = green
+    "enthusiastic2": (0, 255, 0),
+    "amazed1":       (0, 255, 0),      # excited = green
+    "curious1":      (0, 150, 255),    # blue
+    "confused1":     (200, 100, 255),  # purple
+    "surprised1":    (255, 100, 0),    # orange
+    "surprised2":    (255, 100, 0),
+    "laughing1":     (255, 255, 0),    # happy = yellow
+    "laughing2":     (255, 255, 0),
+    "sad1":          (255, 0, 0),      # sad = red
+    "sad2":          (255, 0, 0),
+    "welcoming1":    (0, 255, 180),    # teal
+    "welcoming2":    (0, 255, 180),
+    "grateful1":     (100, 255, 100),  # green
+    "loving1":       (255, 105, 180),  # loving = pink
+    "proud1":        (255, 200, 0),    # gold
+    "shy1":          (255, 105, 180),  # shy = pink
+    "scared1":       (255, 0, 0),      # red
+    "dance1":        None,             # dance = flash mode
+    "dance2":        None,
+    "dance3":        None,
+    "yes1":          (0, 255, 100),    # green
+    "no1":           (255, 0, 0),      # red
+    # Generic fallbacks
+    "excited":   (0, 255, 0),
+    "curious":   (0, 150, 255),
+    "calm":      (100, 200, 100),
+    "surprised": (255, 100, 0),
+    "amused":    (255, 255, 0),
+    "skeptical": (200, 100, 255),
 }
+
+# Colors to cycle through during dance flash
+DANCE_FLASH_COLORS = [
+    (255, 0, 0),      # red
+    (0, 255, 0),      # green
+    (0, 0, 255),      # blue
+    (255, 255, 0),    # yellow
+    (255, 0, 255),    # magenta
+    (0, 255, 255),    # cyan
+    (255, 100, 0),    # orange
+]
 
 # State-level presets (RGB + brightness 0-1)
 STATE_RGB = {
@@ -73,6 +111,8 @@ class BaseLightBackend:
         self._lock = threading.Lock()
         self._breathing = False
         self._breath_thread = None
+        self._dance_flashing = False
+        self._dance_flash_thread = None
 
     @property
     def is_connected(self):
@@ -80,13 +120,19 @@ class BaseLightBackend:
 
     def set_emotion(self, emotion):
         """Update lights to match the robot's current emotion."""
-        if not self.is_connected or emotion == self._current_emotion:
+        if not self.is_connected:
             return
         self._current_emotion = emotion
         self._stop_breathing()
+        self._stop_dance_flash()
 
         rgb = EMOTION_RGB.get(emotion)
-        if not rgb:
+        if rgb is None and emotion in EMOTION_RGB:
+            # None means dance flash mode
+            self._start_dance_flash()
+            logger.info("[lights] Emotion -> %s (flash mode)", emotion)
+            return
+        if rgb is None:
             logger.debug("[lights] Unknown emotion '%s', skipping", emotion)
             return
 
@@ -137,6 +183,7 @@ class BaseLightBackend:
         if not self.is_connected:
             return
         self._stop_breathing()
+        self._stop_dance_flash()
         self._turn_off()
         logger.info("[lights] Lights off")
 
@@ -147,6 +194,31 @@ class BaseLightBackend:
     def _turn_off(self):
         """Override in subclass: turn off lights."""
         raise NotImplementedError
+
+    def _start_dance_flash(self):
+        if self._dance_flashing:
+            return
+        self._dance_flashing = True
+        self._dance_flash_thread = threading.Thread(
+            target=self._dance_flash_loop, daemon=True, name="lights_dance_flash")
+        self._dance_flash_thread.start()
+
+    def _stop_dance_flash(self):
+        self._dance_flashing = False
+        if self._dance_flash_thread:
+            self._dance_flash_thread.join(timeout=3)
+            self._dance_flash_thread = None
+
+    def _dance_flash_loop(self):
+        idx = 0
+        while self._dance_flashing:
+            r, g, b = DANCE_FLASH_COLORS[idx % len(DANCE_FLASH_COLORS)]
+            self._set_color(r, g, b, brightness=1.0, duration_ms=100)
+            idx += 1
+            for _ in range(10):  # ~1 second per color
+                if not self._dance_flashing:
+                    return
+                time.sleep(0.1)
 
     def _start_breathing(self):
         if self._breathing:
@@ -252,46 +324,42 @@ class LIFXBackend(BaseLightBackend):
 # ─── Govee Backend ───────────────────────────────────────────────────────────
 
 class GoveeBackend(BaseLightBackend):
-    """Controls Govee lights via cloud API.
+    """Controls Govee lights via the cloud router API.
 
-    Setup:
-      pip install govee-api-laggat
-      Get API key from https://developer.govee.com/
-      Set GOVEE_API_KEY, GOVEE_DEVICE, GOVEE_MODEL in .env
+    Uses the newer openapi.api.govee.com router API with capability-based control.
+    Credentials from env vars or hardcoded defaults for hackathon use.
     """
+
+    CLOUD_BASE = "https://openapi.api.govee.com/router/api/v1"
+    REQUEST_TIMEOUT = 20
+    MIN_UPDATE_INTERVAL = 0.5  # Rate limit: max 2 updates/sec
 
     def __init__(self):
         super().__init__()
-        self._api_key = os.environ.get("GOVEE_API_KEY", "").strip()
-        self._device = os.environ.get("GOVEE_DEVICE", "").strip()
-        self._model = os.environ.get("GOVEE_MODEL", "").strip()
+        self._api_key = os.environ.get("GOVEE_API_KEY", "79b75228-cf3f-44d9-bd42-2739d5e633c2").strip()
+        self._device_sku = os.environ.get("GOVEE_DEVICE_SKU", "H802A").strip()
+        self._device_id = os.environ.get("GOVEE_DEVICE_ID", "0F:C8:D4:39:C5:46:30:2C").strip()
         self._connected = False
+        self._last_update = 0.0
 
-        if not self._api_key:
-            logger.warning("[govee] GOVEE_API_KEY not set. Govee integration disabled.")
-            return
-        if not self._device or not self._model:
-            logger.warning("[govee] GOVEE_DEVICE and GOVEE_MODEL required. "
-                           "Find them in Govee app or API: GET https://developer-api.govee.com/v1/devices")
-            return
-
-        # Test the connection
         try:
-            import requests
-            resp = requests.get(
-                "https://developer-api.govee.com/v1/devices",
-                headers={"Govee-API-Key": self._api_key},
-                timeout=10,
+            # Turn on the light to verify connection
+            ok = self._cloud_control(
+                capability_type="devices.capabilities.on_off",
+                instance="powerSwitch",
+                value=1,
             )
-            if resp.status_code == 200:
+            if ok:
                 self._connected = True
-                devices = resp.json().get("data", {}).get("devices", [])
-                names = [(d["device"], d["model"], d.get("deviceName", "")) for d in devices]
-                logger.info("[govee] Connected. Devices: %s", names)
+                # Set initial brightness
+                self._cloud_control(
+                    capability_type="devices.capabilities.range",
+                    instance="brightness",
+                    value=80,
+                )
+                logger.info("[govee] Connected via router API (SKU=%s, ID=%s)", self._device_sku, self._device_id)
             else:
-                logger.error("[govee] API error %d: %s", resp.status_code, resp.text)
-        except ImportError:
-            logger.error("[govee] requests not installed (should be in requirements)")
+                logger.error("[govee] Failed to connect — power-on command failed")
         except Exception as e:
             logger.error("[govee] Failed to connect: %s", e)
 
@@ -299,52 +367,69 @@ class GoveeBackend(BaseLightBackend):
     def is_connected(self):
         return self._connected
 
+    def _cloud_control(self, *, capability_type, instance, value):
+        """Send a capability-based control command to the Govee router API."""
+        import json as _json
+        import uuid
+        from urllib import error as _error, request as _request
+
+        payload = {
+            "requestId": str(uuid.uuid4()),
+            "payload": {
+                "sku": self._device_sku,
+                "device": self._device_id,
+                "capability": {
+                    "type": capability_type,
+                    "instance": instance,
+                    "value": value,
+                },
+            },
+        }
+        try:
+            req = _request.Request(
+                f"{self.CLOUD_BASE}/device/control",
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "Govee-API-Key": self._api_key,
+                },
+                data=_json.dumps(payload).encode("utf-8"),
+            )
+            with _request.urlopen(req, timeout=self.REQUEST_TIMEOUT) as resp:
+                body = resp.read().decode("utf-8")
+            data = _json.loads(body)
+            return data.get("code") == 200
+        except _error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            logger.error("[govee] HTTP %d: %s", exc.code, detail)
+            return False
+        except Exception as exc:
+            logger.error("[govee] Request failed: %s", exc)
+            return False
+
     def _set_color(self, r, g, b, brightness=1.0, duration_ms=500):
+        # Rate limit
+        now = time.time()
+        if (now - self._last_update) < self.MIN_UPDATE_INTERVAL:
+            return
+        self._last_update = now
+
         with self._lock:
-            try:
-                import requests
-                # Set color
-                requests.put(
-                    "https://developer-api.govee.com/v1/devices/control",
-                    headers={"Govee-API-Key": self._api_key, "Content-Type": "application/json"},
-                    json={
-                        "device": self._device,
-                        "model": self._model,
-                        "cmd": {"name": "color", "value": {"r": r, "g": g, "b": b}},
-                    },
-                    timeout=5,
-                )
-                # Set brightness (0-100)
-                bri_pct = max(1, min(100, int(brightness * 100)))
-                requests.put(
-                    "https://developer-api.govee.com/v1/devices/control",
-                    headers={"Govee-API-Key": self._api_key, "Content-Type": "application/json"},
-                    json={
-                        "device": self._device,
-                        "model": self._model,
-                        "cmd": {"name": "brightness", "value": bri_pct},
-                    },
-                    timeout=5,
-                )
-            except Exception as e:
-                logger.error("[govee] Command failed: %s", e)
+            # Pack RGB into single int
+            packed = (max(0, min(255, r)) << 16) | (max(0, min(255, g)) << 8) | max(0, min(255, b))
+            self._cloud_control(
+                capability_type="devices.capabilities.color_setting",
+                instance="colorRgb",
+                value=packed,
+            )
 
     def _turn_off(self):
         with self._lock:
-            try:
-                import requests
-                requests.put(
-                    "https://developer-api.govee.com/v1/devices/control",
-                    headers={"Govee-API-Key": self._api_key, "Content-Type": "application/json"},
-                    json={
-                        "device": self._device,
-                        "model": self._model,
-                        "cmd": {"name": "turn", "value": "off"},
-                    },
-                    timeout=5,
-                )
-            except Exception as e:
-                logger.error("[govee] Off command failed: %s", e)
+            self._cloud_control(
+                capability_type="devices.capabilities.on_off",
+                instance="powerSwitch",
+                value=0,
+            )
 
 
 # ─── Hue Backend ─────────────────────────────────────────────────────────────

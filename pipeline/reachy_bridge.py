@@ -32,10 +32,24 @@ class ReachyBridge:
         self._lock = threading.Lock()
         self._emotions_cache = {}  # name -> RecordedMove
         self._playing_emotion = False
+        self._wobble_paused = False
 
     @property
     def connected(self):
         return self._connected
+
+    @property
+    def robot(self):
+        """Access underlying ReachyMini for direct set_target() calls."""
+        return self._robot
+
+    def pause_wobble(self):
+        """Pause wobble loop (while a mode is controlling the head)."""
+        self._wobble_paused = True
+
+    def resume_wobble(self):
+        """Resume wobble loop."""
+        self._wobble_paused = False
 
     def connect(self):
         """Connect to Reachy Mini."""
@@ -184,7 +198,7 @@ class ReachyBridge:
                 audio_age = time.time() - self._last_audio_time
 
             # Wobble if we received audio in the last 0.5s and not playing an emotion
-            if audio_age < 0.5 and level > 0.02 and self._connected and self._robot and not self._playing_emotion:
+            if audio_age < 0.5 and level > 0.02 and self._connected and self._robot and not self._playing_emotion and not self._wobble_paused:
                 pitch = np.sin(time.time() * 6) * level * 25
                 try:
                     self._robot.set_target(head=create_head_pose(pitch=pitch))
